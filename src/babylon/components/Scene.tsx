@@ -2,6 +2,9 @@ import React from 'react';
 import BABYLON from 'babylonjs';
 import {Cuckoo, DataType} from '../tools/data/CuckooHash';
 import DatasetParser from '../tools/data/DatasetParser';
+import R16TextureParser from '../tools/data/R16TextureParser';
+import RGBA8x512TextureParser from '../tools/data/RGBA8x512TextureParser';
+import RGBA8x4TextureParser from '../tools/data/RGBA8x4TextureParser';
 import fragmentShader from '../shaders/dvr.fragment.glsl';
 import vertexShader from '../shaders/dvr.vertex.glsl';
 import composeFragmentShader from '../shaders/compose.fragment.glsl';
@@ -31,8 +34,8 @@ export default class Scene extends React.Component<SceneProps, SceneState> {
   public gl: WebGL2RenderingContext;
 
   private dataset = {
-    dimensions: new BABYLON.Vector3(256, 256, 256),
-    resolution: new BABYLON.Vector3(16.5, 16.5, 23.0),
+    dimensions: new BABYLON.Vector3(4096, 4096, 4096),
+    resolution: new BABYLON.Vector3(6.0, 6.0, 30.0),
   };
 
   public updateCamera(): void {
@@ -85,6 +88,7 @@ export default class Scene extends React.Component<SceneProps, SceneState> {
     this.camera.maxZ = 1000.0;
     this.camera.minZ = 0.01;
     this.camera.wheelPrecision = 100.0;
+    this.camera.panningSensibility = 10000.0;
 
     // Dataset
     const physicalExtent = this.dataset.dimensions.multiply(this.dataset.resolution);
@@ -109,6 +113,18 @@ export default class Scene extends React.Component<SceneProps, SceneState> {
     frontplane.material = frontplaneMaterial;
 
     // Textures + Framebuffers
+
+    // Voxel cache
+    const voxelCache = new BABYLON.Texture('datasets/voxelcache.raw', this.scene, true, false,
+      BABYLON.Texture.NEAREST_SAMPLINGMODE, undefined, undefined, undefined, false, undefined, R16TextureParser);
+
+    // Page table cache
+    const pageTable = new BABYLON.Texture('datasets/pagetable.raw', this.scene, true, false,
+      BABYLON.Texture.NEAREST_SAMPLINGMODE, undefined, undefined, undefined, false, undefined, RGBA8x512TextureParser);
+
+    // Multi-resolution page directory
+    const pageDirectory = new BABYLON.Texture('datasets/pagedirectory.raw', this.scene, true, false,
+      BABYLON.Texture.NEAREST_SAMPLINGMODE, undefined, undefined, undefined, false, undefined, RGBA8x4TextureParser);
 
     // Segmentation
     const cubeTex = new BABYLON.Texture('datasets/e2198.raw', this.scene, true, false,
@@ -173,6 +189,10 @@ export default class Scene extends React.Component<SceneProps, SceneState> {
     frontplaneMaterial.setVector3('sizes', selectionHash.getSizes());
     frontplaneMaterial.setTexture('cubeTex', cubeTex);
     frontplaneMaterial.setTexture('selectionTex', selectionHash.texture);
+    frontplaneMaterial.setTexture('voxelCache', voxelCache);
+    frontplaneMaterial.setTexture('pageTable', pageTable);
+    frontplaneMaterial.setTexture('pageDirectory', pageDirectory);
+
 
     // Post Processes
     shaderStore.composePixelShader = composeFragmentShader.trim();
@@ -193,6 +213,7 @@ export default class Scene extends React.Component<SceneProps, SceneState> {
         this.engine.scenes[0].dispose();
       }
     }
+    this.engine.wipeCaches();
     this.engine.dispose();
   }
 

@@ -1,4 +1,5 @@
 precision highp float;
+precision highp int;
 precision highp usampler2D;
 precision highp usampler3D;
 
@@ -8,6 +9,10 @@ uniform vec3 sizes; // TODO: should be uvec3
 
 uniform usampler3D cubeTex;
 uniform float fovy;
+
+uniform lowp usampler3D voxelCache;
+uniform lowp usampler3D pageTable;
+uniform lowp usampler3D pageDirectory;
 
 in vec3 frontPos;
 in vec3 rayDir;
@@ -20,11 +25,49 @@ const vec3 ZERO3 = vec3(0.0);
 const vec4 ZERO4 = vec4(0.0);
 const vec3 ONE3 = vec3(1.0);
 const vec4 ONE4 = vec4(1.0);
+const vec4 RED = vec4(1.0, 0.0, 0.0, 1.0);
+const vec4 GREEN = vec4(0.0, 1.0, 0.0, 1.0);
+const vec4 BLUE = vec4(0.0, 0.0, 1.0, 1.0);
+const uint PAGE_DIRECTORY = uint(4);
+const uint PAGE_TABLE = uint(8);
+const uint VOXEL_BLOCK = uint(12);
 
 const float SQRT2INV = 0.70710678118;
 const float SQRT3INV = 0.57735026919;
 
 const float STEPSIZE = 0.001;
+
+// TODO: Move to uniforms
+const bool DEBUG = true;
+const float DATASET_SIZE = 4096.0;
+const float BLOCK_SIZE_VOXEL = 32.0;
+const float BLOCK_SIZE_PAGE = 32.0;
+const float BLOCK_COUNT_VOXEL = 16.0;
+const float BLOCK_COUNT_PAGE = 16.0;
+const float TOTAL_SIZE_PAGE_DIRECTORY = 8.0;
+const float TOTAL_SIZE_PAGE_CACHE = BLOCK_SIZE_PAGE * BLOCK_COUNT_PAGE;
+const float TOTAL_SIZE_VOXEL_CACHE = BLOCK_SIZE_VOXEL * BLOCK_COUNT_VOXEL;
+
+const vec3 MIP_OFFSET[4] = vec3[4](
+  vec3(0.0, 0.0, 0.0),
+  vec3(4.0, 0.0, 0.0),
+  vec3(4.0, 2.0, 0.0),
+  vec3(5.0, 2.0, 0.0)
+);
+
+const vec3 MIP_FACTOR[4] = vec3[4](
+  vec3(1.0, 1.0, 1.0),
+  vec3(0.5, 0.5, 1.0),
+  vec3(0.25, 0.25, 1.0),
+  vec3(0.125, 0.125, 0.5)
+);
+
+const uint EMPTY = uint(0);
+const uint MAPPED = uint(1);
+const uint NOT_MAPPED = uint(2);
+
+
+
 
 const uint _murmur3_32_c1 = uint(0xcc9e2d51);
 const uint _murmur3_32_c2 = uint(0x1b873593);
@@ -34,6 +77,138 @@ const uint _murmur3_32_mix2 = uint(0xc2b2ae35);
 
 const uint _fnv_offset_32 = uint(0x811c9dc5);
 const uint _fnv_prime_32 = uint(16777619);
+
+// --------------------- BEGIN Voxel Lookup ----------------------------
+
+/*
+ * Denormalize Texture Coordinates
+ *
+ * @param position Coordinates in TC: [0,1]
+ *
+ * @return coordinates in voxel space
+ */
+vec3 getVoxelCoordinates(vec3 position) {
+  return position * DATASET_SIZE;
+}
+
+/*
+ * Look up an entry from the Page Directory
+ *
+ * @param positionVoxel The actual raw position in the dataset we are looking at in voxel space
+ * 
+ * @return PageDirectoryEntry (RGBA8 uint) :
+ *                        R - x coordinate in Page Table
+ *                        G - y coordinate in Page Table
+ *                        B - z coordinate in Page Table
+ *                        A - Mapping flag indicates mapping status
+ */
+uvec4 getDirectoryEntry(vec3 positionVoxel, uint mip) {
+  // Get bits representing page directory ( lop off page table and voxel table bits )
+  vec3 positionPageDirectory = (positionVoxel * MIP_FACTOR[mip]) / (BLOCK_SIZE_PAGE * BLOCK_SIZE_VOXEL);
+
+  // Use bits to index into page directory
+  return texelFetch(pageDirectory, ivec3(MIP_OFFSET[mip] + positionPageDirectory).xyz, 0);
+}
+
+/*
+ * Look up an  from the Page Table
+ *
+ * @param offset The offset page table block we are looking at ( still needs conversion to texture space )
+ * @param positionVoxel The actual raw position in the dataset we are looking at in voxel space
+ *
+ * @return PageTableEntry (RGBA8 uint):
+ *                        R - x coordinate in Voxel Cache
+ *                        G - y coordinate in Voxel Cache
+ *                        B - z coordinate in Voxel Cache
+ *                        A - Mapping flag indicates mapping status
+ */
+uvec4 getPageEntry(vec3 offset, vec3 positionVoxel, uint mip) {
+  // Get bits representing page table ( between page directory and voxel table bits )
+  vec3 positionPageTablePosition = mod((positionVoxel * MIP_FACTOR[mip]) / BLOCK_SIZE_VOXEL, BLOCK_SIZE_PAGE);
+  vec3 positionPageTableOffset = offset * BLOCK_SIZE_PAGE;
+  vec3 positionPageTable = positionPageTableOffset + positionPageTablePosition;
+
+  // use bits to index into page table
+  return texelFetch(pageTable, ivec3(positionPageTable).xyz, 0);
+}
+
+/*
+ * Look up a voxel's id from the Voxel Cache
+ *
+ * @param offset The offset Voxel block we are looking at ( still needs conversion to texture space )
+ * @param positionVoxel The actual raw position in the dataset we are looking at in voxel space
+ *
+ * @return VoxelBlockEntry (R16 uint): TODO allow 64 bit segmentids
+ *                        R - SegmentId
+ *                        G - 0
+ *                        B - 0
+ *                        A - 0
+ */
+uvec4 getVoxelEntry(vec3 offset, vec3 positionVoxel, uint mip) {
+  // Get bits representing voxel table ( lop off everything before voxel table bits )
+  vec3 positionVoxelTablePosition = mod(positionVoxel * MIP_FACTOR[mip], BLOCK_SIZE_VOXEL);
+  vec3 positionVoxelTableOffset = offset * BLOCK_SIZE_VOXEL;
+  vec3 positionVoxelTable = positionVoxelTableOffset + positionVoxelTablePosition;
+
+  // use bits to index into voxel table
+  return texelFetch(voxelCache, ivec3(positionVoxelTable).xyz, 0);
+}
+
+/*
+ * Lookup the segment id for a position
+ *
+ * @param positionVoxel The position to look up in dataset voxel space
+ *
+ * @return SegmentID and Mapping State(uvec4): TODO allow 64 bit segmentids
+ *                        R - SegmentID (32 upper bits)
+ *                        G - SegmentID (32 lower bits)
+ *                        B - Flag (EMPTY/MAPPED/NOT_MAPPED)
+ *                        A - Level (PAGE_DIRECTORY/PAGE_TABLE/VOXEL_BLOCK)
+ */
+uvec4 getSegIDMapping(vec3 positionVoxel, uint mip) {
+  uvec4 entryDirectory = getDirectoryEntry(positionVoxel, mip);
+  if (entryDirectory.a != MAPPED) {
+    return uvec4(0, 0, uint(entryDirectory.a), PAGE_DIRECTORY);
+  }
+
+  uvec4 entryTable = getPageEntry(vec3(entryDirectory.rgb), positionVoxel, mip);
+  if (entryTable.a != MAPPED) {
+    return uvec4(0, 0, uint(entryTable.a), PAGE_TABLE);
+  }
+
+  uvec4 entryVoxel = getVoxelEntry(vec3(entryTable.rgb), positionVoxel, mip);
+
+  return uvec4(0, int(entryVoxel.r), MAPPED, VOXEL_BLOCK);//return uvec4(0, entryVoxel.r, MAPPED, VOXEL_BLOCK);*/
+}
+
+/*
+ * Same as getSegIDMapping(), this returns only the segID portion
+ *
+ * @param position The actual raw positon in the dataset we are looking at in object space: (0,1)
+ *
+ * @return SegmentID (
+ */
+uint getSegIDMIP(vec3 position, uint mip) {
+  vec3 positionVoxel = getVoxelCoordinates(position);
+  return getSegIDMapping(positionVoxel, mip).g;
+}
+
+uint getSegID(vec3 position) {
+  vec3 positionVoxel = getVoxelCoordinates(position);
+  /*uvec4 seg = getSegIDMapping(positionVoxel, uint(1));
+  if (seg.b == MAPPED)
+    return seg.g;
+  
+  seg = getSegIDMapping(positionVoxel, uint(2));
+  if (seg.b == MAPPED)
+    return seg.g;*/
+
+  return getSegIDMapping(positionVoxel, uint(1)).g;
+}
+
+// --------------------- END Voxel Lookup ----------------------------
+
+
 
 // --------------------- BEGIN Cuckoo Hashing ----------------------------
 
@@ -135,10 +310,10 @@ vec2 iRayBox(vec3 pos, vec3 dir) {
   return vec2(tenter, texit);
 }
 
-uint getSegID( vec3 texCoord )
+/*uint getSegID( vec3 texCoord )
 {
   return textureLod(cubeTex, texCoord, 0.0).r;
-}
+}*/
 
 vec4 segColor(uint segID) {
   float fsegID = float(segID);
@@ -279,7 +454,7 @@ vec3 gammaCorrect(vec3 linearColor, float gamma) {
 
 float calcStepsize(float screenDist) {
   return max(0.5 / 256.0, 0.5 / 256.0 * screenDist * tan(0.5*fovy));
-  //return max(0.5 / 256.0, scale); //Nyquist
+  return max(0.5 / DATASET_SIZE, 0.5 / DATASET_SIZE * screenDist * tan(0.5*fovy));
 }
 
 bool inShadow(vec3 pos, vec3 lightDir) {
@@ -360,28 +535,75 @@ void main() {
   vec3 lightDir = normalize(-dir + cross(dir, vec3(0.0, 1.0, 0.0)));
   vec4 color = ZERO4;
 
-  while (true) {
-    segID = getSegID(pos);
+  while (true) { 
     float curStepsize = calcStepsize(distance(pos, frontPos));
 
-    if (isVisible(segID)) {
-      vec3 normal = normalize(calcGradient(pos, 1.0 * curStepsize));
-      vec3 camDir = -dir;
-      //vec3 basecol = calcSmoothColor(pos, 1.0 / 256.0).rgb;
-      vec3 basecol = segColor(segID).rgb;
-      color.rgb = 0.07 * basecol * 1.0; //occlusion(pos, 2.0 * curStepsize);
-      //if (!inShadow(pos, lightDir)) {
-        color.rgb = phongBlinn(normal, camDir, lightDir, 0.07 * basecol, 1.0*basecol, vec3(0.5), 16.0);
-      //}
-      color.rgb = gammaCorrect(color.rgb, 2.2);
-      color.a = 1.0;
+    vec3 positionVoxel = getVoxelCoordinates(pos);
+    uint mip = uint(0);
 
-      visibleSegID = segID;
-      visiblePos = pos;
-
-      // Break Condition: Hit a visible segment
+    uvec4 segIDMapping = getSegIDMapping(positionVoxel.xyz, uint(0));
+    color = RED;
+    if (segIDMapping.b != MAPPED) {
+      segIDMapping = getSegIDMapping(positionVoxel.xyz, uint(1));
+      mip = uint(1);
+      color = BLUE;
+    }
+    if (segIDMapping.b != MAPPED) {
+      segIDMapping = getSegIDMapping(positionVoxel.xyz, uint(2));
+      mip = uint(2);
+      color = GREEN;
+    }
+    if (segIDMapping.b != MAPPED) {
+      segIDMapping = getSegIDMapping(positionVoxel.xyz, uint(3));
+      mip = uint(3);
+      color = ONE4;
+    }
+    if (segIDMapping.b != MAPPED) {
+      color = ZERO4;
+    } else {
       break;
     }
+    
+
+
+    /*uvec4 directory = getDirectoryEntry(positionVoxel.xyz, uint(0));
+    uvec4 page = getPageEntry(vec3(directory.xyz), positionVoxel.xyz);
+    uvec4 voxel = getVoxelEntry(vec3(page.xyz), positionVoxel.xyz);
+
+    if (directory.a == MAPPED) {
+      //color = vec4(directory);
+
+      if (page.a == MAPPED) {
+        color = vec4(page);
+      }
+    }
+
+    if (color.a > 0.01)
+      break;*/
+
+
+    /*if (segIDMapping.b == MAPPED) {
+      segID = segIDMapping.g;
+
+      if (segID > uint(0)) {
+        vec3 normal = normalize(calcGradient(pos, 1.0 * curStepsize));
+        vec3 camDir = -dir;
+        //vec3 basecol = calcSmoothColor(pos, 1.0 / 256.0).rgb;
+        vec3 basecol = segColor(segID).rgb;
+        color.rgb = 0.07 * basecol * 1.0; //occlusion(pos, 2.0 * curStepsize);
+        //if (!inShadow(pos, lightDir)) {
+          color.rgb = phongBlinn(normal, camDir, lightDir, 0.07 * basecol, 1.0*basecol, vec3(0.5), 16.0);
+        //}
+        color.rgb = gammaCorrect(color.rgb, 2.2);
+        color.a = 1.0;
+
+        visibleSegID = segID;
+        visiblePos = pos;
+
+        // Break Condition: Hit a visible segment
+        break;
+      }
+    }*/
     pos += curStepsize * dir;
 
     // Break Condition: Left the dataset bounding box
