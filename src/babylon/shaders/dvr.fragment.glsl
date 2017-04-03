@@ -25,6 +25,8 @@ const vec3 ZERO3 = vec3(0.0);
 const vec4 ZERO4 = vec4(0.0);
 const vec3 ONE3 = vec3(1.0);
 const vec4 ONE4 = vec4(1.0);
+const vec4 WHITE = vec4(1.0);
+const vec4 BLACK = vec4(0.0, 0.0, 0.0, 1.0);
 const vec4 RED = vec4(1.0, 0.0, 0.0, 1.0);
 const vec4 GREEN = vec4(0.0, 1.0, 0.0, 1.0);
 const vec4 BLUE = vec4(0.0, 0.0, 1.0, 1.0);
@@ -39,27 +41,27 @@ const float STEPSIZE = 0.001;
 
 // TODO: Move to uniforms
 const bool DEBUG = true;
-const float DATASET_SIZE = 4096.0;
+const float DATASET_SIZE = 2048.0;
 const float BLOCK_SIZE_VOXEL = 32.0;
 const float BLOCK_SIZE_PAGE = 32.0;
 const float BLOCK_COUNT_VOXEL = 16.0;
 const float BLOCK_COUNT_PAGE = 16.0;
-const float TOTAL_SIZE_PAGE_DIRECTORY = 8.0;
+const float TOTAL_SIZE_PAGE_DIRECTORY = 4.0;
 const float TOTAL_SIZE_PAGE_CACHE = BLOCK_SIZE_PAGE * BLOCK_COUNT_PAGE;
 const float TOTAL_SIZE_VOXEL_CACHE = BLOCK_SIZE_VOXEL * BLOCK_COUNT_VOXEL;
 
 const vec3 MIP_OFFSET[4] = vec3[4](
   vec3(0.0, 0.0, 0.0),
-  vec3(4.0, 0.0, 0.0),
-  vec3(4.0, 2.0, 0.0),
-  vec3(5.0, 2.0, 0.0)
+  vec3(2.0, 0.0, 0.0),
+  vec3(2.0, 1.0, 0.0),
+  vec3(2.0, 2.0, 0.0)
 );
 
 const vec3 MIP_FACTOR[4] = vec3[4](
   vec3(1.0, 1.0, 1.0),
   vec3(0.5, 0.5, 1.0),
   vec3(0.25, 0.25, 1.0),
-  vec3(0.125, 0.125, 0.5)
+  vec3(0.125, 0.125, 1.0)
 );
 
 const uint EMPTY = uint(0);
@@ -77,6 +79,49 @@ const uint _murmur3_32_mix2 = uint(0xc2b2ae35);
 
 const uint _fnv_offset_32 = uint(0x811c9dc5);
 const uint _fnv_prime_32 = uint(16777619);
+
+ivec3 lastPositionPageDirectory[4] = ivec3[4](
+  ivec3(-1, -1, -1),
+  ivec3(-1, -1, -1),
+  ivec3(-1, -1, -1),
+  ivec3(-1, -1, -1)
+);
+
+uvec4 lastPositionPageDirectoryResult[4] = uvec4[4](
+  uvec4(0,0,0,0),
+  uvec4(0,0,0,0),
+  uvec4(0,0,0,0),
+  uvec4(0,0,0,0)
+);
+
+ivec3 lastPositionPageTable[4] = ivec3[4](
+  ivec3(-1, -1, -1),
+  ivec3(-1, -1, -1),
+  ivec3(-1, -1, -1),
+  ivec3(-1, -1, -1)
+);
+
+uvec4 lastPositionPageTableResult[4] = uvec4[4](
+  uvec4(0,0,0,0),
+  uvec4(0,0,0,0),
+  uvec4(0,0,0,0),
+  uvec4(0,0,0,0)
+);
+
+ivec3 lastPositionVoxelTable[4] = ivec3[4](
+  ivec3(-1, -1, -1),
+  ivec3(-1, -1, -1),
+  ivec3(-1, -1, -1),
+  ivec3(-1, -1, -1)
+);
+
+uvec4 lastPositionVoxelTableResult[4] = uvec4[4](
+  uvec4(0,0,0,0),
+  uvec4(0,0,0,0),
+  uvec4(0,0,0,0),
+  uvec4(0,0,0,0)
+);
+
 
 // --------------------- BEGIN Voxel Lookup ----------------------------
 
@@ -106,8 +151,16 @@ uvec4 getDirectoryEntry(vec3 positionVoxel, uint mip) {
   // Get bits representing page directory ( lop off page table and voxel table bits )
   vec3 positionPageDirectory = (positionVoxel * MIP_FACTOR[mip]) / (BLOCK_SIZE_PAGE * BLOCK_SIZE_VOXEL);
 
+  ivec3 iPositionPageDirectory = ivec3(MIP_OFFSET[mip] + positionPageDirectory);
+  if (iPositionPageDirectory == lastPositionPageDirectory[mip]) {
+    return lastPositionPageDirectoryResult[mip];
+  }
+
+  lastPositionPageDirectory[mip] = iPositionPageDirectory;
+  lastPositionPageDirectoryResult[mip] = texelFetch(pageDirectory, iPositionPageDirectory, 0);
+
   // Use bits to index into page directory
-  return texelFetch(pageDirectory, ivec3(MIP_OFFSET[mip] + positionPageDirectory).xyz, 0);
+  return lastPositionPageDirectoryResult[mip];
 }
 
 /*
@@ -126,10 +179,17 @@ uvec4 getPageEntry(vec3 offset, vec3 positionVoxel, uint mip) {
   // Get bits representing page table ( between page directory and voxel table bits )
   vec3 positionPageTablePosition = mod((positionVoxel * MIP_FACTOR[mip]) / BLOCK_SIZE_VOXEL, BLOCK_SIZE_PAGE);
   vec3 positionPageTableOffset = offset * BLOCK_SIZE_PAGE;
-  vec3 positionPageTable = positionPageTableOffset + positionPageTablePosition;
+  ivec3 iPositionPageTable = ivec3(positionPageTableOffset + positionPageTablePosition);
+
+  if (iPositionPageTable == lastPositionPageTable[mip]) {
+    return lastPositionPageTableResult[mip];
+  }
+
+  lastPositionPageTable[mip] = iPositionPageTable;
+  lastPositionPageTableResult[mip] = texelFetch(pageTable, iPositionPageTable, 0);
 
   // use bits to index into page table
-  return texelFetch(pageTable, ivec3(positionPageTable).xyz, 0);
+  return lastPositionPageTableResult[mip];
 }
 
 /*
@@ -148,10 +208,17 @@ uvec4 getVoxelEntry(vec3 offset, vec3 positionVoxel, uint mip) {
   // Get bits representing voxel table ( lop off everything before voxel table bits )
   vec3 positionVoxelTablePosition = mod(positionVoxel * MIP_FACTOR[mip], BLOCK_SIZE_VOXEL);
   vec3 positionVoxelTableOffset = offset * BLOCK_SIZE_VOXEL;
-  vec3 positionVoxelTable = positionVoxelTableOffset + positionVoxelTablePosition;
+  ivec3 iPositionVoxelTable = ivec3(positionVoxelTableOffset + positionVoxelTablePosition);
+
+  if (iPositionVoxelTable == lastPositionVoxelTable[mip]) {
+    return lastPositionVoxelTableResult[mip];
+  }
+
+  lastPositionVoxelTable[mip] = iPositionVoxelTable;
+  lastPositionVoxelTableResult[mip] = texelFetch(voxelCache, iPositionVoxelTable, 0);
 
   // use bits to index into voxel table
-  return texelFetch(voxelCache, ivec3(positionVoxelTable).xyz, 0);
+  return lastPositionVoxelTableResult[mip];
 }
 
 /*
@@ -195,15 +262,19 @@ uint getSegIDMIP(vec3 position, uint mip) {
 
 uint getSegID(vec3 position) {
   vec3 positionVoxel = getVoxelCoordinates(position);
-  /*uvec4 seg = getSegIDMapping(positionVoxel, uint(1));
+  /*uvec4 seg = getSegIDMapping(positionVoxel, uint(0));
+  if (seg.b == MAPPED)
+    return seg.g;*/
+  
+  /*seg = getSegIDMapping(positionVoxel, uint(1));
   if (seg.b == MAPPED)
     return seg.g;
-  
+
   seg = getSegIDMapping(positionVoxel, uint(2));
   if (seg.b == MAPPED)
     return seg.g;*/
 
-  return getSegIDMapping(positionVoxel, uint(1)).g;
+  return getSegIDMapping(positionVoxel, uint(3)).g;
 }
 
 // --------------------- END Voxel Lookup ----------------------------
@@ -292,14 +363,14 @@ bool isInsideBox(vec3 v, vec3 blf, vec3 trb) {
   return dot(step(blf, v), step(v, trb)) > 2.99;
 }
 
-vec2 iRayBox(vec3 pos, vec3 dir) {
+vec2 iRayBox(vec3 pos, vec3 dir, vec3 blf, vec3 trb) {
   if (any(equal(dir, ZERO3))) {
     dir += 0.000001;
     dir = normalize(dir);
   }
 
-  vec3 tmin3 = (ZERO3 - pos) / dir;
-  vec3 tmax3 = (ONE3 - pos) / dir;
+  vec3 tmin3 = (blf - pos) / dir;
+  vec3 tmax3 = (trb - pos) / dir;
 
   vec3 tenter3 = min(tmin3, tmax3);
   vec3 texit3 = max(tmin3, tmax3);
@@ -310,10 +381,30 @@ vec2 iRayBox(vec3 pos, vec3 dir) {
   return vec2(tenter, texit);
 }
 
-/*uint getSegID( vec3 texCoord )
-{
-  return textureLod(cubeTex, texCoord, 0.0).r;
-}*/
+vec2 iRayCurrentMIPVoxel(vec3 pos, vec3 dir, uint mip) {
+  vec3 mipVoxelSize = 1.0 / (MIP_FACTOR[mip] * DATASET_SIZE);
+  vec3 voxelStart = mipVoxelSize * floor(pos / mipVoxelSize);
+  vec3 voxelEnd = voxelStart + mipVoxelSize;
+
+  return iRayBox(pos, dir, voxelStart, voxelEnd);
+}
+
+vec2 iRayCurrentMIPBlock(vec3 pos, vec3 dir, uint mip, uint blocktype) {
+  float blocksize = 1.0; // single voxel
+
+  if (blocktype == PAGE_DIRECTORY) {
+    blocksize = BLOCK_SIZE_PAGE * BLOCK_SIZE_VOXEL;
+  }
+  else if (blocktype == PAGE_TABLE) {
+    blocksize = BLOCK_SIZE_VOXEL;
+  }
+
+  vec3 mipBlockSize = blocksize / (MIP_FACTOR[mip] * DATASET_SIZE);
+  vec3 blockStart = mipBlockSize * floor(pos / mipBlockSize);
+  vec3 blockEnd = blockStart + mipBlockSize;
+
+  return iRayBox(pos, dir, blockStart, blockEnd);
+}
 
 vec4 segColor(uint segID) {
   float fsegID = float(segID);
@@ -453,7 +544,7 @@ vec3 gammaCorrect(vec3 linearColor, float gamma) {
 }
 
 float calcStepsize(float screenDist) {
-  return max(0.5 / 256.0, 0.5 / 256.0 * screenDist * tan(0.5*fovy));
+  //return max(0.5 / 256.0, 0.5 / 256.0 * screenDist * tan(0.5*fovy));
   return max(0.5 / DATASET_SIZE, 0.5 / DATASET_SIZE * screenDist * tan(0.5*fovy));
 }
 
@@ -516,7 +607,7 @@ void main() {
   vec3 dir = normalize(rayDir);
 
   // Calculate multipliers 't' (pos + t * dir) for entry and exit points, stored in rayStartStop.x and rayStartStop.y
-  vec2 rayStartStop = iRayBox(pos, dir);
+  vec2 rayStartStop = iRayBox(pos, dir, ZERO3, vec3(1.0, 1.0, 0.125));
 
   // Make sure we don't start behind the camera (negative t)
   rayStartStop.x = max(0.0, rayStartStop.x) + 0.0001;
@@ -535,58 +626,88 @@ void main() {
   vec3 lightDir = normalize(-dir + cross(dir, vec3(0.0, 1.0, 0.0)));
   vec4 color = ZERO4;
 
-  while (true) { 
+  float steps = 0.0;
+  vec3 same = ZERO3;
+
+  while (true) {
+    steps += 1.0;
+
+    // Break Condition: Left the dataset bounding box
+    if (isInsideBox(pos, vec3(0.0), vec3(1.0)) == false) {
+      break;
+    }
+
+    // Hack for golden v0
+    if (pos.z > 0.125) { // only 256 pixel deep
+      break;
+    }
+
+
     float curStepsize = calcStepsize(distance(pos, frontPos));
 
     vec3 positionVoxel = getVoxelCoordinates(pos);
-    uint mip = uint(0);
 
-    uvec4 segIDMapping = getSegIDMapping(positionVoxel.xyz, uint(0));
-    color = RED;
-    if (segIDMapping.b != MAPPED) {
-      segIDMapping = getSegIDMapping(positionVoxel.xyz, uint(1));
-      mip = uint(1);
-      color = BLUE;
-    }
-    if (segIDMapping.b != MAPPED) {
-      segIDMapping = getSegIDMapping(positionVoxel.xyz, uint(2));
-      mip = uint(2);
-      color = GREEN;
-    }
-    if (segIDMapping.b != MAPPED) {
-      segIDMapping = getSegIDMapping(positionVoxel.xyz, uint(3));
-      mip = uint(3);
-      color = ONE4;
-    }
-    if (segIDMapping.b != MAPPED) {
-      color = ZERO4;
+    ivec3 oldPDPos = lastPositionVoxelTable[3];
+    uvec4 segIDMapping3 = getSegIDMapping(positionVoxel.xyz, uint(3));
+    if (oldPDPos == lastPositionVoxelTable[3]) {
+      same.g += 1.0;
     } else {
-      break;
-    }
-    
-
-
-    /*uvec4 directory = getDirectoryEntry(positionVoxel.xyz, uint(0));
-    uvec4 page = getPageEntry(vec3(directory.xyz), positionVoxel.xyz);
-    uvec4 voxel = getVoxelEntry(vec3(page.xyz), positionVoxel.xyz);
-
-    if (directory.a == MAPPED) {
-      //color = vec4(directory);
-
-      if (page.a == MAPPED) {
-        color = vec4(page);
-      }
+      same.r += 1.0;
     }
 
-    if (color.a > 0.01)
-      break;*/
+    if (segIDMapping3.b == EMPTY) {
+      vec2 blockStartStop = iRayCurrentMIPBlock(pos, dir, uint(3), segIDMapping3.a);
+      pos += max(curStepsize, blockStartStop.y) * dir;
+      continue;
+    }
 
+    uvec4 segIDMapping2 = getSegIDMapping(positionVoxel.xyz, uint(2));
+    if (segIDMapping2.b == EMPTY) {
+      vec2 blockStartStop = iRayCurrentMIPBlock(pos, dir, uint(2), segIDMapping2.a);
+      pos += max(curStepsize, blockStartStop.y) * dir;
+      continue;
+    }
 
-    /*if (segIDMapping.b == MAPPED) {
+    uvec4 segIDMapping1 = getSegIDMapping(positionVoxel.xyz, uint(1));
+    if (segIDMapping1.b == EMPTY) {
+      vec2 blockStartStop = iRayCurrentMIPBlock(pos, dir, uint(1), segIDMapping1.a);
+      pos += max(curStepsize, blockStartStop.y) * dir;
+      continue;
+    }
+
+    uvec4 segIDMapping0 = getSegIDMapping(positionVoxel.xyz, uint(0));
+    if (segIDMapping0.b == EMPTY && segIDMapping0.a < VOXEL_BLOCK) {
+      vec2 blockStartStop = iRayCurrentMIPBlock(pos, dir, uint(0), segIDMapping0.a);
+      pos += max(curStepsize, blockStartStop.y) * dir;
+      continue;
+    }
+
+    uint mip = uint(0);
+    uvec4 segIDMapping = segIDMapping0;
+    if (segIDMapping.b != MAPPED) {
+      mip = uint(1);
+      segIDMapping = segIDMapping1;
+    }
+    if (segIDMapping.b != MAPPED) {
+      mip = uint(2);
+      segIDMapping = segIDMapping2;
+    }
+    if (segIDMapping.b != MAPPED) {
+      mip = uint(3);
+      segIDMapping = segIDMapping3;
+    }
+
+    // Voxel block is not mapped - skip whole block
+    // TODO: Dangerous, If the whole MIP3 PageTable is not mapped, we might skip over a higher-res, mapped PageTable!
+    if (segIDMapping.b != MAPPED) {
+      vec2 blockStartStop = iRayCurrentMIPBlock(pos, dir, uint(3), segIDMapping.a);
+      pos += max(curStepsize, blockStartStop.y) * dir;
+      continue;
+    } else {
       segID = segIDMapping.g;
 
-      if (segID > uint(0)) {
-        vec3 normal = normalize(calcGradient(pos, 1.0 * curStepsize));
+      if (isVisible(segID)) {
+        vec3 normal = normalize(calcGradient(pos, 1.0 / 2048.0));
         vec3 camDir = -dir;
         //vec3 basecol = calcSmoothColor(pos, 1.0 / 256.0).rgb;
         vec3 basecol = segColor(segID).rgb;
@@ -603,15 +724,19 @@ void main() {
         // Break Condition: Hit a visible segment
         break;
       }
-    }*/
-    pos += curStepsize * dir;
-
-    // Break Condition: Left the dataset bounding box
-    if (isInsideBox(pos, vec3(0.0), vec3(1.0)) == false) {
-      break;
     }
-  }
 
+    // Voxel Block was mapped, but voxel itself is empty. Skip large voxels (mip 2 or larger)
+    float t = 0.0;
+    if (mip >= uint(1)) {
+      t = iRayCurrentMIPBlock(pos, dir, mip, VOXEL_BLOCK).y;
+    }
+    pos += max(curStepsize, t) * dir;
+
+    
+  }
+  //color = vec4(same.r/1000.0, same.g/1000.0, 0.0, 1.0);
+  //color.a = 1.0;
   glFragColor = color;
   glFragSegID = visibleSegID;
   glFragDepth = vec4(distance(visiblePos, frontPos));

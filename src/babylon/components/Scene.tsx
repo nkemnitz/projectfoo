@@ -34,8 +34,8 @@ export default class Scene extends React.Component<SceneProps, SceneState> {
   public gl: WebGL2RenderingContext;
 
   private dataset = {
-    dimensions: new BABYLON.Vector3(4096, 4096, 4096),
-    resolution: new BABYLON.Vector3(6.0, 6.0, 30.0),
+    dimensions: new BABYLON.Vector3(2048, 2048, 2048),
+    resolution: new BABYLON.Vector3(4.0, 4.0, 40.0),
   };
 
   public updateCamera(): void {
@@ -87,7 +87,7 @@ export default class Scene extends React.Component<SceneProps, SceneState> {
     this.camera.attachControl(this.canvas, false, true);
     this.camera.maxZ = 1000.0;
     this.camera.minZ = 0.01;
-    this.camera.wheelPrecision = 100.0;
+    this.camera.wheelPrecision = 1000.0;
     this.camera.panningSensibility = 10000.0;
 
     // Dataset
@@ -132,12 +132,14 @@ export default class Scene extends React.Component<SceneProps, SceneState> {
 
     // Selected Segment Hash Texture
     const selectionHash = new Cuckoo(this.scene, DataType.UInt64, 'identity', 'fnv1a');
-    for (let i = 500; i < 1000; ++i) {
+    /*for (let i = 500; i < 1000; ++i) {
       selectionHash.set(new UInt64(i, 0));
     }
     for (let i = 3000; i < 3500; ++i) {
       selectionHash.set(new UInt64(i, 0));
-    }
+    }*/
+    selectionHash.set(new UInt64(4366, 0));
+    selectionHash.set(new UInt64(9247, 0));
     /*for (let i = 0; i < 35000; ++i) {
        selectionHash.set(i, 0);
     }*/

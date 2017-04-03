@@ -18,9 +18,9 @@ class DatasetParser implements BABYLON.Internals.CustomTextureParser {
     this.gl = engine._gl as WebGL2RenderingContext;
     this.level = 0;
     this.internalFormat = this.gl.RGBA8UI;
-    this.height = 8;
-    this.width = 8;
-    this.depth = 8;
+    this.height = 4;
+    this.width = 4;
+    this.depth = 4;
     this.border = 0;
     this.format = this.gl.RGBA_INTEGER;
     this.type = this.gl.UNSIGNED_BYTE;
